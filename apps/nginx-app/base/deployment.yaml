@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: easy-nginx
+  namespace: easy-nginx
+  labels:
+    app: easy-nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: easy-nginx
+  template:
+    metadata:
+      labels:
+        app: easy-nginx
+      annotations:
+        build.timestamp: "2024-01-01T00:00:00Z"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+      - name: nginx
+        image: mofwili/easy-nginx:latest
+        ports:
+        - containerPort: 80
+        env:
+        - name: NGINX_ENV
+          value: "production"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10

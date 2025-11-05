@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: easy-nginx
+  namespace: easy-nginx
+  labels:
+    app: easy-nginx
+spec:
+  selector:
+    app: easy-nginx
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30080
+  type: NodePort
