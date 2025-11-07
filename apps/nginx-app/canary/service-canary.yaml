@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: easy-nginx-canary
+  namespace: easy-nginx
+  labels:
+    app: easy-nginx
+spec:
+  selector:
+    app: easy-nginx
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    nodePort: 30081
+  type: NodePort

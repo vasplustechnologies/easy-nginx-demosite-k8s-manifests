@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  generateName: production-pipeline-natai-
+  generateName: production-pipeline-with-rollout-01
   namespace: argo
 spec:
   entrypoint: main-pipeline
@@ -39,7 +39,14 @@ spec:
             value: "mofwili/easy-nginx:{{steps.build-image.outputs.parameters.version-tag}}"
         when: "{{steps.build-image.status}} == Succeeded"
 
-    
+    # ✅ NEW: Argo Rollouts deployment step
+    - - name: update-rollout
+        template: update-rollout
+        arguments:
+          parameters:
+          - name: image-tag
+            value: "mofwili/easy-nginx:{{steps.build-image.outputs.parameters.version-tag}}"
+        when: "{{steps.security-scan.status}} == Succeeded"
 
     - - name: notify-success
         template: slack-notification
@@ -48,8 +55,8 @@ spec:
           - name: status
             value: "success"
           - name: message
-            value: "🚀 Production pipeline completed! Image: mofwili/easy-nginx:{{steps.build-image.outputs.parameters.version-tag}} | Scan: {{steps.security-scan.outputs.parameters.scan-result}} | Reports saved as artifacts"
-        when: "{{steps.security-scan.status}} == Succeeded"
+            value: "🚀 Production pipeline completed! Image: mofwili/easy-nginx:{{steps.build-image.outputs.parameters.version-tag}} | Scan: {{steps.security-scan.outputs.parameters.scan-result}} | Deployment: {{steps.update-rollout.outputs.parameters.rollout-status}}"
+        when: "{{steps.update-rollout.status}} == Succeeded"
 
     - - name: notify-failure
         template: slack-notification
@@ -61,6 +68,7 @@ spec:
             value: "❌ Pipeline failed at: {{steps.security-scan.outputs.parameters.failed-step}}"
         when: "{{steps.security-scan.status}} == Failed"
 
+  # ✅ ALL YOUR EXISTING TEMPLATES REMAIN EXACTLY THE SAME
   - name: git-clone
     container:
       image: alpine/git:latest
@@ -198,6 +206,93 @@ spec:
         archive:
           none: {}  # Keep files as-is, no compression
 
+  # # ✅ NEW: Argo Rollouts template
+  # - name: update-rollout
+  #   inputs:
+  #     parameters:
+  #     - name: image-tag
+  #   container:
+  #     image: argoproj/kubectl-argo-rollouts:latest
+  #     command: [sh, -c]
+  #     args:
+  #     - |
+  #       set -e
+  #       echo "🚀 Starting Argo Rollouts deployment..."
+  #       echo "📦 Deploying image: {{inputs.parameters.image-tag}}"
+        
+  #       # Update the rollout with the new image
+  #       kubectl argo rollouts set image easy-nginx \
+  #         nginx={{inputs.parameters.image-tag}} \
+  #         -n easy-nginx
+        
+  #       echo "✅ Rollout update initiated!"
+  #       echo "📊 Rollout status:"
+  #       kubectl argo rollouts get rollout easy-nginx -n easy-nginx --watch=false
+        
+  #       # Get rollout status for notification
+  #       ROLLOUT_STATUS=$(kubectl argo rollouts get rollout easy-nginx -n easy-nginx -o jsonpath='{.status.phase}')
+  #       echo "Rollout Phase: $ROLLOUT_STATUS"
+  #       echo "$ROLLOUT_STATUS" > /tmp/rollout-status.txt
+        
+  #       echo "🎯 Canary deployment in progress..."
+  #       echo "   25% → 50% → 75% → 100%"
+  #       echo "   Monitor with: kubectl argo rollouts get rollout easy-nginx -n easy-nginx --watch"
+  #     volumeMounts:
+  #     - name: kubeconfig
+  #       mountPath: /root/.kube
+  #       readOnly: true
+  #   outputs:
+  #     parameters:
+  #     - name: rollout-status
+  #       valueFrom:
+  #         path: /tmp/rollout-status.txt
+
+  - name: update-rollout
+  inputs:
+    parameters:
+    - name: image-tag
+  container:
+    image: bitnami/kubectl:latest  # Use standard kubectl + manual plugin install
+    command: [sh, -c]
+    args:
+    - |
+      set -e
+      echo "🚀 Setting up Argo Rollouts plugin..."
+      
+      # Install argo-rollouts kubectl plugin manually
+      curl -LO https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
+      chmod +x kubectl-argo-rollouts-linux-amd64
+      mv kubectl-argo-rollouts-linux-amd64 /usr/local/bin/kubectl-argo-rollouts
+      
+      echo "✅ Argo Rollouts plugin installed"
+      echo "📦 Deploying image: {{inputs.parameters.image-tag}}"
+      
+      # Update the rollout with the new image
+      kubectl argo rollouts set image easy-nginx \
+        nginx={{inputs.parameters.image-tag}} \
+        -n easy-nginx
+      
+      echo "✅ Rollout update initiated!"
+      echo "📊 Rollout status:"
+      kubectl argo rollouts get rollout easy-nginx -n easy-nginx --watch=false
+      
+      # Get rollout status for notification
+      ROLLOUT_STATUS=$(kubectl argo rollouts get rollout easy-nginx -n easy-nginx -o jsonpath='{.status.phase}')
+      echo "Rollout Phase: $ROLLOUT_STATUS"
+      echo "$ROLLOUT_STATUS" > /tmp/rollout-status.txt
+      
+      echo "🎯 Canary deployment in progress..."
+      echo "   25% → 50% → 75% → 100%"
+    volumeMounts:
+    - name: kubeconfig
+      mountPath: /root/.kube
+      readOnly: true
+  outputs:
+    parameters:
+    - name: rollout-status
+      valueFrom:
+        path: /tmp/rollout-status.txt
+
   - name: slack-notification
     inputs:
       parameters:
@@ -285,6 +380,12 @@ spec:
       items:
       - key: .dockerconfigjson
         path: config.json
+  - name: kubeconfig
+    secret:
+      secretName: workflow-kubeconfig
+      items:
+      - key: config
+        path: config
 
   volumeClaimTemplates:
   - metadata:
