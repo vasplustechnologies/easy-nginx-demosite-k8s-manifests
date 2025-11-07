@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: check-contents-
+  namespace: argo
+spec:
+  entrypoint: check-contents
+  serviceAccountName: workflow-executor
+  
+  templates:
+  - name: check-contents
+    container:
+      image: alpine/git:latest
+      command: [sh, -c]
+      args:
+      - |
+        echo "🔍 Checking repository structure..."
+        git clone https://github.com/vasplustechnologies/easy-nginx-demosite.git /check
+        cd /check
+        echo "📁 Current directory: $(pwd)"
+        echo "📄 All files and directories:"
+        ls -la
+        echo ""
+        echo "🔍 Looking for Dockerfile..."
+        find . -name "Dockerfile" -type f
+        echo ""
+        echo "🔍 Looking for any .html, .css, .js files..."
+        find . -name "*.html" -o -name "*.css" -o -name "*.js" -o -name "*.yml" -o -name "*.yaml"
+        echo ""
+        echo "🔍 Complete file tree:"
+        find . -type f | sort

@@ -1,0 +1,281 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: production-pipeline-
+  namespace: argo
+spec:
+  entrypoint: main-pipeline
+  serviceAccountName: workflow-executor
+
+  arguments:
+    parameters:
+    - name: git-repo
+      value: https://github.com/vasplustechnologies/easy-nginx-demosite.git
+    - name: git-branch
+      value: main
+    - name: image-version
+      value: "1.0.0"
+
+  templates:
+  - name: main-pipeline
+    steps:
+    - - name: clone-repo
+        template: git-clone
+
+    - - name: build-image
+        template: kaniko-build-push
+        arguments:
+          parameters:
+          - name: git-sha
+            value: "{{steps.clone-repo.outputs.parameters.git-sha}}"
+          - name: image-version
+            value: "{{workflow.parameters.image-version}}"
+
+    - - name: security-scan
+        template: security-scan
+        arguments:
+          parameters:
+          - name: image-tag
+            value: "mofwili/easy-nginx:{{steps.build-image.outputs.parameters.version-tag}}"
+        when: "{{steps.build-image.status}} == Succeeded"
+
+    - - name: notify-success
+        template: slack-notification
+        arguments:
+          parameters:
+          - name: status
+            value: "success"
+          - name: message
+            value: "🚀 Production pipeline completed! Image: mofwili/easy-nginx:{{steps.build-image.outputs.parameters.version-tag}} | Scan: {{steps.security-scan.outputs.parameters.scan-result}}"
+        when: "{{steps.security-scan.status}} == Succeeded"
+
+    - - name: notify-failure
+        template: slack-notification
+        arguments:
+          parameters:
+          - name: status
+            value: "failure"
+          - name: message
+            value: "❌ Pipeline failed at: {{steps.security-scan.outputs.parameters.failed-step}}"
+        when: "{{steps.security-scan.status}} == Failed"
+
+  - name: git-clone
+    container:
+      image: alpine/git:latest
+      command: [sh, -c]
+      args:
+      - |
+        set -e
+        echo "📦 Cloning repository..."
+        rm -rf /mnt/workspace/* /mnt/workspace/.* 2>/dev/null || true
+        git clone {{workflow.parameters.git-repo}} /mnt/workspace
+        cd /mnt/workspace
+        git checkout {{workflow.parameters.git-branch}}
+        GIT_SHA=$(git rev-parse --short HEAD)
+        echo "✅ Repository cloned. SHA: $GIT_SHA"
+        echo "📁 Workspace contents:"
+        ls -la /mnt/workspace/
+        echo $GIT_SHA > /tmp/git-sha.txt
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
+    outputs:
+      parameters:
+      - name: git-sha
+        valueFrom:
+          path: /tmp/git-sha.txt
+
+  - name: kaniko-build-push
+    inputs:
+      parameters:
+      - name: git-sha
+      - name: image-version
+    container:
+      image: gcr.io/kaniko-project/executor:v1.9.1
+      args:
+      - --dockerfile=/mnt/workspace/Dockerfile
+      - --context=dir:///mnt/workspace
+      - --destination=mofwili/easy-nginx:{{inputs.parameters.git-sha}}
+      - --destination=mofwili/easy-nginx:{{inputs.parameters.image-version}}-{{inputs.parameters.git-sha}}
+      - --destination=mofwili/easy-nginx:{{inputs.parameters.image-version}}
+      - --destination=mofwili/easy-nginx:latest
+      - --cache=false
+      - --single-snapshot
+      - --verbosity=info
+      - --skip-tls-verify
+      env:
+      - name: DOCKER_CONFIG
+        value: /kaniko/.docker
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
+      - name: docker-config
+        mountPath: /kaniko/.docker
+    outputs:
+      parameters:
+      - name: version-tag
+        value: "{{inputs.parameters.image-version}}-{{inputs.parameters.git-sha}}"
+
+  - name: security-scan
+    inputs:
+      parameters:
+      - name: image-tag
+    container:
+      image: aquasec/trivy:latest
+      command: [sh, -c]
+      args:
+      - |
+        set -e
+        echo "🔒 Starting comprehensive security scan..."
+        echo "📦 Scanning image: {{inputs.parameters.image-tag}}"
+        
+        # Create reports directory in PERSISTENT storage
+        mkdir -p /mnt/workspace/reports
+
+        # Run vulnerability scan - FAIL on CRITICAL vulnerabilities only
+        echo "🔍 Scanning for CRITICAL vulnerabilities..."
+        if trivy image --severity CRITICAL --exit-code 1 --format json --output /mnt/workspace/reports/trivy-critical.json {{inputs.parameters.image-tag}}; then
+          echo "✅ No CRITICAL vulnerabilities found"
+          CRITICAL_COUNT=0
+        else
+          CRITICAL_COUNT=$(cat /mnt/workspace/reports/trivy-critical.json 2>/dev/null | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' || echo "0")
+          echo "❌ Found $CRITICAL_COUNT CRITICAL vulnerabilities"
+        fi
+
+        # Run full vulnerability scan for report (don't fail on HIGH)
+        echo "🔍 Running full vulnerability scan..."
+        trivy image --severity HIGH,CRITICAL --format json --output /mnt/workspace/reports/trivy-full.json {{inputs.parameters.image-tag}} || true
+        
+        HIGH_COUNT=$(cat /mnt/workspace/reports/trivy-full.json 2>/dev/null | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' || echo "0")
+        
+        echo "📊 Security Scan Results:"
+        echo "  CRITICAL vulnerabilities: $CRITICAL_COUNT"
+        echo "  HIGH vulnerabilities: $HIGH_COUNT"
+
+        # Generate HTML report for better visualization
+        echo "📄 Generating HTML report..."
+        trivy image --format template --template "@contrib/html.tpl" --output /mnt/workspace/reports/trivy-report.html {{inputs.parameters.image-tag}} || true
+
+        # Quality Gate - FAIL only on CRITICAL vulnerabilities
+        if [ "$CRITICAL_COUNT" -gt "0" ]; then
+          echo "❌ QUALITY GATE FAILED: $CRITICAL_COUNT CRITICAL vulnerabilities found"
+          echo "critical_vulnerabilities" > /tmp/failed-step.txt
+          echo "failed" > /tmp/scan-result.txt
+          exit 1
+        else
+          echo "✅ QUALITY GATE PASSED: No critical vulnerabilities"
+          echo "passed" > /tmp/scan-result.txt
+          echo "none" > /tmp/failed-step.txt
+        fi
+        
+        echo "📁 Reports saved to persistent storage: /mnt/workspace/reports/"
+        echo "📋 Available reports:"
+        ls -la /mnt/workspace/reports/
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
+    outputs:
+      parameters:
+      - name: scan-result
+        valueFrom:
+          path: /tmp/scan-result.txt
+      - name: failed-step
+        valueFrom:
+          path: /tmp/failed-step.txt
+
+  - name: slack-notification
+    inputs:
+      parameters:
+      - name: status
+      - name: message
+    container:
+      image: curlimages/curl:latest
+      command: [sh, -c]
+      args:
+      - |
+        set -e
+        echo "📨 Preparing Slack notification..."
+        
+        # Check if webhook URL is set
+        if [ -z "$SLACK_WEBHOOK_URL" ]; then
+          echo "⚠️  SLACK_WEBHOOK_URL not set, skipping notification"
+          exit 0
+        fi
+
+        # Determine color based on status
+        if [ "{{inputs.parameters.status}}" = "success" ]; then
+          COLOR="good"
+          EMOJI="🚀"
+        else
+          COLOR="danger"
+          EMOJI="❌"
+        fi
+
+        # Create rich notification payload
+        PAYLOAD=$(cat << EOF
+        {
+          "attachments": [
+            {
+              "color": "$COLOR",
+              "title": "{{inputs.parameters.status}}",
+              "text": "{{inputs.parameters.message}}",
+              "fields": [
+                {
+                  "title": "Workflow",
+                  "value": "{{workflow.name}}",
+                  "short": true
+                },
+                {
+                  "title": "Namespace",
+                  "value": "{{workflow.namespace}}",
+                  "short": true
+                },
+                {
+                  "title": "Repository",
+                  "value": "{{workflow.parameters.git-repo}}",
+                  "short": false
+                },
+                {
+                  "title": "Version",
+                  "value": "{{workflow.parameters.image-version}}",
+                  "short": true
+                }
+              ],
+              "footer": "Argo Workflows",
+              "ts": $(date +%s)
+            }
+          ]
+        }
+        EOF
+        )
+
+        echo "📤 Sending Slack notification..."
+        curl -X POST \
+          -H 'Content-type: application/json' \
+          --data "$PAYLOAD" \
+          "$SLACK_WEBHOOK_URL"
+        
+        echo "✅ Notification sent successfully!"
+      env:
+      - name: SLACK_WEBHOOK_URL
+        valueFrom:
+          secretKeyRef:
+            name: slack-webhook
+            key: url
+
+  volumes:
+  - name: docker-config
+    secret:
+      secretName: dockerhub-credentials
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+
+  volumeClaimTemplates:
+  - metadata:
+      name: workspace-pvc
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi

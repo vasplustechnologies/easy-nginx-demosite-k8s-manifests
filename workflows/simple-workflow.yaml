@@ -1,0 +1,114 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: uat-pipeline-02
+  namespace: argo
+spec:
+  entrypoint: main-pipeline
+  serviceAccountName: workflow-executor
+
+  arguments:
+    parameters:
+    - name: git-repo
+      value: https://github.com/vasplustechnologies/easy-nginx-demosite.git
+    - name: git-branch
+      value: main
+
+  templates:
+  - name: main-pipeline
+    steps:
+    - - name: clone-repo
+        template: git-clone
+    - - name: verify-workspace
+        template: verify-workspace
+    - - name: build-image
+        template: kaniko-build-push
+        arguments:
+          parameters:
+          - name: git-sha
+            value: "{{steps.clone-repo.outputs.parameters.git-sha}}"
+
+  - name: git-clone
+    container:
+      image: alpine/git:latest
+      command: [sh, -c]
+      args:
+      - |
+        set -e
+        echo "📦 Cloning repository..."
+        rm -rf /mnt/workspace/* /mnt/workspace/.* 2>/dev/null || true
+        git clone {{workflow.parameters.git-repo}} /mnt/workspace
+        cd /mnt/workspace
+        git checkout {{workflow.parameters.git-branch}}
+        GIT_SHA=$(git rev-parse --short HEAD)
+        echo "✅ Repository cloned. SHA: $GIT_SHA"
+        echo "📁 Workspace contents:"
+        ls -la /mnt/workspace/
+        echo $GIT_SHA > /tmp/git-sha.txt
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
+    outputs:
+      parameters:
+      - name: git-sha
+        valueFrom:
+          path: /tmp/git-sha.txt
+
+  - name: verify-workspace
+    container:
+      image: alpine
+      command: [sh, -c]
+      args:
+      - |
+        echo "🔍 Verifying workspace contents..."
+        echo "📁 Current directory: $(pwd)"
+        echo "📁 Workspace contents:"
+        ls -la /mnt/workspace/
+        echo "🔍 Dockerfile check:"
+        ls -la /mnt/workspace/Dockerfile || echo "❌ Dockerfile not found!"
+        echo "📄 Dockerfile content:"
+        cat /mnt/workspace/Dockerfile || echo "❌ Cannot read Dockerfile"
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
+
+  - name: kaniko-build-push
+    inputs:
+      parameters:
+      - name: git-sha
+    container:
+      image: gcr.io/kaniko-project/executor:v1.9.1
+      args:
+      - --dockerfile=/mnt/workspace/Dockerfile
+      - --context=dir:///mnt/workspace
+      - --destination=mofwili/easy-nginx:{{inputs.parameters.git-sha}}
+      - --destination=mofwili/easy-nginx:latest
+      - --cache=false
+      - --single-snapshot
+      - --verbosity=info
+      - --skip-tls-verify
+      env:
+      - name: DOCKER_CONFIG
+        value: /kaniko/.docker
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
+      - name: docker-config
+        mountPath: /kaniko/.docker
+
+  volumes:
+  - name: docker-config
+    secret:
+      secretName: dockerhub-credentials
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+
+  volumeClaimTemplates:
+  - metadata:
+      name: workspace-pvc
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi

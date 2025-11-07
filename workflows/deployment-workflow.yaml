@@ -1,0 +1,317 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: production-pipeline-
+  namespace: argo
+spec:
+  entrypoint: main-pipeline
+  serviceAccountName: workflow-executor
+  arguments:
+    parameters:
+    - name: git-repo
+      value: https://github.com/vasplustechnologies/easy-nginx-demosite.git
+    - name: git-branch
+      value: main
+    - name: image-version
+      value: "1.0.0"
+
+  templates:
+  - name: main-pipeline
+    steps:
+    - - name: clone-repo
+        template: git-clone
+    - - name: build-image
+        template: kaniko-build-push
+        arguments:
+          parameters:
+          - name: git-sha
+            value: "{{steps.clone-repo.outputs.parameters.git-sha}}"
+          - name: image-version
+            value: "{{workflow.parameters.image-version}}"
+        when: "{{steps.clone-repo.status}} == Succeeded"
+    - - name: security-scan
+        template: security-scan
+        arguments:
+          parameters:
+          - name: image-tag
+            value: "mofwili/easy-nginx:{{workflow.parameters.image-version}}-{{steps.clone-repo.outputs.parameters.git-sha}}"
+        when: "{{steps.build-image.status}} == Succeeded"
+    - - name: update-rollout
+        template: update-rollout
+        arguments:
+          parameters:
+          - name: image-tag
+            value: "mofwili/easy-nginx:{{workflow.parameters.image-version}}-{{steps.clone-repo.outputs.parameters.git-sha}}"
+        when: "{{steps.security-scan.status}} == Succeeded && {{steps.security-scan.outputs.parameters.scan-passed}} == 'passed'"
+    - - name: notify-success
+        template: slack-notification
+        arguments:
+          parameters:
+          - name: status
+            value: "success"
+          - name: message
+            value: "🚀 Production deployment completed successfully! Image: mofwili/easy-nginx:{{workflow.parameters.image-version}}-{{steps.clone-repo.outputs.parameters.git-sha}}"
+        when: "{{steps.update-rollout.status}} == Succeeded"
+    - - name: notify-failure
+        template: slack-notification
+        arguments:
+          parameters:
+          - name: status
+            value: "failure"
+          - name: message
+            value: "❌ Pipeline failed at step: {{steps.security-scan.outputs.parameters.failed-reason}}"
+        when: "{{steps.security-scan.status}} == Failed || {{steps.security-scan.outputs.parameters.scan-passed}} != 'passed'"
+
+  - name: git-clone
+    container:
+      image: alpine/git:latest
+      command: [sh, -c]
+      args:
+      - |
+        set -e
+        echo "📦 Cloning repository: {{workflow.parameters.git-repo}}"
+        rm -rf /mnt/workspace/* /mnt/workspace/.* 2>/dev/null || true
+        git clone {{workflow.parameters.git-repo}} /mnt/workspace
+        cd /mnt/workspace
+        git checkout {{workflow.parameters.git-branch}}
+        GIT_SHA=$(git rev-parse --short HEAD)
+        echo "✅ Repository cloned at SHA: $GIT_SHA"
+        echo "📁 Files in workspace:"
+        ls -la
+        echo $GIT_SHA > /tmp/git-sha.txt
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
+    outputs:
+      parameters:
+      - name: git-sha
+        valueFrom:
+          path: /tmp/git-sha.txt
+
+  - name: kaniko-build-push
+    inputs:
+      parameters:
+      - name: git-sha
+      - name: image-version
+    container:
+      image: gcr.io/kaniko-project/executor:v1.9.1
+      args:
+      - --dockerfile=/mnt/workspace/Dockerfile
+      - --context=dir:///mnt/workspace
+      - --destination=mofwili/easy-nginx:{{inputs.parameters.image-version}}-{{inputs.parameters.git-sha}}
+      - --destination=mofwili/easy-nginx:{{inputs.parameters.image-version}}
+      - --destination=mofwili/easy-nginx:latest
+      - --cache=false
+      - --single-snapshot
+      - --verbosity=info
+      - --skip-tls-verify
+      env:
+      - name: DOCKER_CONFIG
+        value: /kaniko/.docker
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
+      - name: docker-config
+        mountPath: /kaniko/.docker
+
+  - name: security-scan
+    inputs:
+      parameters:
+      - name: image-tag
+    container:
+      image: aquasec/trivy:latest
+      command: [sh, -c]
+      args:
+      - |
+        set -e
+        echo "🔒 Starting comprehensive security scan..."
+        echo "📦 Scanning image: {{inputs.parameters.image-tag}}"
+
+        # Create reports directory
+        mkdir -p /reports
+
+        # Run vulnerability scan - FAIL on CRITICAL vulnerabilities
+        echo "🔍 Scanning for CRITICAL vulnerabilities..."
+        trivy image --severity CRITICAL --exit-code 1 --format json --output /reports/trivy-critical.json {{inputs.parameters.image-tag}} || true
+
+        # Run full vulnerability scan for report
+        echo "🔍 Running full vulnerability scan..."
+        trivy image --severity HIGH,CRITICAL --format json --output /reports/trivy-full.json {{inputs.parameters.image-tag}} || true
+
+        # Analyze results
+        CRITICAL_COUNT=$(cat /reports/trivy-critical.json 2>/dev/null | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' || echo "0")
+        HIGH_COUNT=$(cat /reports/trivy-full.json 2>/dev/null | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' || echo "0")
+
+        echo "📊 Security Scan Results:"
+        echo "  CRITICAL vulnerabilities: $CRITICAL_COUNT"
+        echo "  HIGH vulnerabilities: $HIGH_COUNT"
+
+        # Quality Gate - FAIL if CRITICAL vulnerabilities found
+        if [ "$CRITICAL_COUNT" -gt "0" ]; then
+          echo "❌ QUALITY GATE FAILED: $CRITICAL_COUNT CRITICAL vulnerabilities found"
+          echo "critical_vulnerabilities" > /tmp/failed-reason.txt
+          exit 1
+        elif [ "$HIGH_COUNT" -gt "5" ]; then
+          echo "⚠️  QUALITY GATE WARNING: $HIGH_COUNT HIGH vulnerabilities found (threshold: 5)"
+          echo "high_vulnerabilities" > /tmp/failed-reason.txt
+          exit 1
+        else
+          echo "✅ QUALITY GATE PASSED: No critical vulnerabilities and acceptable high vulnerabilities"
+          echo "passed" > /tmp/scan-passed.txt
+          echo "none" > /tmp/failed-reason.txt
+        fi
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /tmp
+      - name: reports
+        mountPath: /reports
+    outputs:
+      parameters:
+      - name: scan-passed
+        valueFrom:
+          path: /tmp/scan-passed.txt
+      - name: failed-reason
+        valueFrom:
+          path: /tmp/failed-reason.txt
+    retryStrategy:
+      limit: 1
+
+  - name: update-rollout
+    inputs:
+      parameters:
+      - name: image-tag
+    container:
+      image: bitnami/kubectl:latest
+      command: [sh, -c]
+      args:
+      - |
+        set -e
+        echo "🚀 Starting canary deployment..."
+        echo "📦 Deploying image: {{inputs.parameters.image-tag}}"
+
+        # Update the rollout with the new image
+        kubectl patch rollout easy-nginx -n easy-nginx \
+          -p '{"spec":{"template":{"spec":{"containers":[{"name":"nginx","image":"{{inputs.parameters.image-tag}}"}]}}}}'
+
+        echo "✅ Rollout update initiated successfully!"
+        echo "📊 Canary deployment in progress..."
+        echo "   - 25% → 50% → 75% → 100%"
+        echo "   - Stable: http://localhost:30080"
+        echo "   - Canary: http://localhost:30081"
+
+        # Wait for rollout to start
+        sleep 10
+
+        # Show rollout status
+        kubectl get rollout easy-nginx -n easy-nginx -o wide
+      volumeMounts:
+      - name: kubeconfig
+        mountPath: /root/.kube
+        readOnly: true
+
+  - name: slack-notification
+    inputs:
+      parameters:
+      - name: status
+      - name: message
+    container:
+      image: curlimages/curl:latest
+      command: [sh, -c]
+      args:
+      - |
+        set -e
+        SLACK_WEBHOOK="$SLACK_WEBHOOK_URL"
+
+        if [ -z "$SLACK_WEBHOOK" ]; then
+          echo "⚠️  SLACK_WEBHOOK_URL not set, skipping notification"
+          exit 0
+        fi
+
+        if [ "{{inputs.parameters.status}}" = "success" ]; then
+          EMOJI="🚀"
+          COLOR="good"
+        else
+          EMOJI="❌"
+          COLOR="danger"
+        fi
+
+        PAYLOAD=$(cat << EOF
+        {
+          "attachments": [
+            {
+              "color": "$COLOR",
+              "title": "{{inputs.parameters.status}}",
+              "text": "{{inputs.parameters.message}}",
+              "fields": [
+                {
+                  "title": "Workflow",
+                  "value": "{{workflow.name}}",
+                  "short": true
+                },
+                {
+                  "title": "Namespace",
+                  "value": "{{workflow.namespace}}",
+                  "short": true
+                },
+                {
+                  "title": "Repository",
+                  "value": "{{workflow.parameters.git-repo}}",
+                  "short": false
+                },
+                {
+                  "title": "Branch",
+                  "value": "{{workflow.parameters.git-branch}}",
+                  "short": true
+                },
+                {
+                  "title": "Version",
+                  "value": "{{workflow.parameters.image-version}}",
+                  "short": true
+                }
+              ],
+              "ts": $(date +%s),
+              "footer": "Argo Workflows",
+              "footer_icon": "https://argoproj.github.io/argo-workflows/assets/logo.png"
+            }
+          ]
+        }
+        EOF
+        )
+
+        echo "📨 Sending Slack notification..."
+        curl -X POST -H 'Content-type: application/json' \
+          --data "$PAYLOAD" \
+          "$SLACK_WEBHOOK"
+
+        echo "✅ Notification sent successfully!"
+      env:
+      - name: SLACK_WEBHOOK_URL
+        valueFrom:
+          secretKeyRef:
+            name: slack-webhook
+            key: url
+
+  volumes:
+  - name: docker-config
+    secret:
+      secretName: dockerhub-credentials
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+  - name: kubeconfig
+    secret:
+      secretName: workflow-kubeconfig
+      items:
+      - key: config
+        path: config
+  - name: reports
+    emptyDir: {}
+
+  volumeClaimTemplates:
+  - metadata:
+      name: workspace-pvc
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi

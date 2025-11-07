@@ -1,0 +1,221 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: production-pipeline-debug-
+  namespace: argo
+spec:
+  entrypoint: main-pipeline
+  serviceAccountName: workflow-executor
+  arguments:
+    parameters:
+    - name: git-repo
+      value: https://github.com/vasplustechnologies/easy-nginx-demosite.git
+    - name: git-branch
+      value: main
+
+  templates:
+  - name: main-pipeline
+    steps:
+    - - name: clone-repo
+        template: git-clone
+    - - name: debug-workspace
+        template: debug-workspace
+    - - name: build-image
+        template: kaniko-build-push
+        arguments:
+          parameters:
+          - name: git-sha
+            value: "{{steps.clone-repo.outputs.parameters.git-sha}}"
+    # Comment out subsequent steps until build works
+    # - - name: security-scan
+    #     template: security-scan
+    #     arguments:
+    #       parameters:
+    #       - name: image-tag
+    #         value: "mofwili/easy-nginx:{{steps.clone-repo.outputs.parameters.git-sha}}"
+    # - - name: update-rollout
+    #     template: update-rollout
+    #     arguments:
+    #       parameters:
+    #       - name: image-tag
+    #         value: "mofwili/easy-nginx:{{steps.clone-repo.outputs.parameters.git-sha}}"
+    # - - name: notify-success
+    #     template: slack-notification
+    #     arguments:
+    #       parameters:
+    #       - name: status
+    #         value: "success"
+    #       - name: message
+    #         value: "🚀 Production deployment completed successfully! Image: mofwili/easy-nginx:{{steps.clone-repo.outputs.parameters.git-sha}}"
+
+  - name: debug-workspace
+    container:
+      image: alpine
+      command: [sh, -c]
+      args:
+      - |
+        echo "=== Debugging Workspace Contents ==="
+        echo "Current directory: $(pwd)"
+        echo "Workspace contents:"
+        ls -la /mnt/workspace/
+        echo ""
+        echo "Dockerfile check:"
+        ls -la /mnt/workspace/Dockerfile || echo "Dockerfile not found!"
+        echo ""
+        echo "File tree:"
+        find /mnt/workspace -type f | sort
+        echo ""
+        echo "Dockerfile content (if exists):"
+        cat /mnt/workspace/Dockerfile || echo "Cannot read Dockerfile"
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
+
+  - name: git-clone
+    container:
+      image: alpine/git:latest
+      command: [sh, -c]
+      args:
+      - |
+        set -e
+        echo "📦 Cloning repository: {{workflow.parameters.git-repo}}"
+        rm -rf /mnt/workspace/* /mnt/workspace/.* 2>/dev/null || true
+        git clone {{workflow.parameters.git-repo}} /mnt/workspace
+        cd /mnt/workspace
+        git checkout {{workflow.parameters.git-branch}}
+        GIT_SHA=$(git rev-parse --short HEAD)
+        echo "✅ Repository cloned at SHA: $GIT_SHA"
+        echo "📁 Files in workspace:"
+        ls -la
+        echo $GIT_SHA > /tmp/git-sha.txt
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
+    outputs:
+      parameters:
+      - name: git-sha
+        valueFrom:
+          path: /tmp/git-sha.txt
+
+  - name: kaniko-build-push
+    inputs:
+      parameters:
+      - name: git-sha
+    container:
+      image: gcr.io/kaniko-project/executor:v1.9.1
+      args:
+      - --dockerfile=/mnt/workspace/Dockerfile
+      - --context=dir:///mnt/workspace
+      - --destination=mofwili/easy-nginx:{{inputs.parameters.git-sha}}
+      - --destination=mofwili/easy-nginx:latest
+      - --cache=false
+      - --single-snapshot
+      - --verbosity=debug
+      - --skip-tls-verify
+      env:
+      - name: DOCKER_CONFIG
+        value: /kaniko/.docker
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
+      - name: docker-config
+        mountPath: /kaniko/.docker
+
+  # Keep your existing templates for reference (commented out)
+  # - name: security-scan
+  #   inputs:
+  #     parameters:
+  #     - name: image-tag
+  #   container:
+  #     image: aquasec/trivy:latest
+  #     command: [sh, -c]
+  #     args:
+  #     - |
+  #       set -e
+  #       echo "🔒 Starting comprehensive security scan..."
+  #       echo "📦 Scanning image: {{inputs.parameters.image-tag}}"
+  #       # ... your existing security scan code
+  #     volumeMounts:
+  #     - name: workspace-pvc
+  #       mountPath: /tmp
+  #     - name: reports
+  #       mountPath: /reports
+  #   outputs:
+  #     parameters:
+  #     - name: scan-passed
+  #       valueFrom:
+  #         path: /tmp/scan-passed.txt
+  #     - name: failed-reason
+  #       valueFrom:
+  #         path: /tmp/failed-reason.txt
+  #   retryStrategy:
+  #     limit: 1
+
+  # - name: update-rollout
+  #   inputs:
+  #     parameters:
+  #     - name: image-tag
+  #   container:
+  #     image: bitnami/kubectl:latest
+  #     command: [sh, -c]
+  #     args:
+  #     - |
+  #       set -e
+  #       echo "🚀 Starting canary deployment..."
+  #       echo "📦 Deploying image: {{inputs.parameters.image-tag}}"
+  #       kubectl patch rollout easy-nginx -n easy-nginx \
+  #         -p '{"spec":{"template":{"spec":{"containers":[{"name":"nginx","image":"{{inputs.parameters.image-tag}}"}]}}}}'
+  #       echo "✅ Rollout update initiated successfully!"
+  #     volumeMounts:
+  #     - name: kubeconfig
+  #       mountPath: /root/.kube
+  #       readOnly: true
+
+  # - name: slack-notification
+  #   inputs:
+  #     parameters:
+  #     - name: status
+  #     - name: message
+  #   container:
+  #     image: curlimages/curl:latest
+  #     command: [sh, -c]
+  #     args:
+  #     - |
+  #       set -e
+  #       SLACK_WEBHOOK="$SLACK_WEBHOOK_URL"
+  #       if [ -z "$SLACK_WEBHOOK" ]; then
+  #         echo "⚠️  SLACK_WEBHOOK_URL not set, skipping notification"
+  #         exit 0
+  #       fi
+  #       # ... your existing slack notification code
+  #     env:
+  #     - name: SLACK_WEBHOOK_URL
+  #       valueFrom:
+  #         secretKeyRef:
+  #           name: slack-webhook
+  #           key: url
+
+  volumes:
+  - name: docker-config
+    secret:
+      secretName: dockerhub-credentials
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+  - name: kubeconfig
+    secret:
+      secretName: workflow-kubeconfig
+      items:
+      - key: config
+        path: config
+  - name: reports
+    emptyDir: {}
+
+  volumeClaimTemplates:
+  - metadata:
+      name: workspace-pvc
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
