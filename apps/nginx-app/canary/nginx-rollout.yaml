@@ -11,11 +11,11 @@ spec:
     canary:
       steps:
       - setWeight: 25
-      - pause: {duration: 30s}
+      - pause: {duration: 10s}
       - setWeight: 50
-      - pause: {duration: 30s}
+      - pause: {duration: 10s}
       - setWeight: 75
-      - pause: {duration: 30s}
+      - pause: {duration: 10s}
   revisionHistoryLimit: 3
   selector:
     matchLabels:
@@ -27,7 +27,7 @@ spec:
     spec:
       containers:
       - name: nginx
-        image: mofwili/easy-nginx:1.0.0-initial  # Will be updated by image-updater
+        image: nginx:1.25-alpine  # ✅ Use a specific, stable nginx version
         ports:
         - containerPort: 80
         resources:

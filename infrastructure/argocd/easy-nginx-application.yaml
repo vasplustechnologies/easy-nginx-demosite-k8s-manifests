@@ -15,7 +15,10 @@ spec:
   source:
     repoURL: https://github.com/vasplustechnologies/easy-nginx-demosite-k8s-manifests.git
     targetRevision: main
-    path: apps/nginx-app/canary  # Points to your canary directory
+    path: apps/nginx-app/canary
+    # ✅ ADD THIS to disable Kustomize and use plain YAML
+    directory:
+      recurse: false
   destination:
     server: https://kubernetes.default.svc
     namespace: easy-nginx
