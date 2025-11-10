@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  generateName: production-pipeline-ci-
+  generateName: production-secured-pipeline-ci-
   namespace: argo
 spec:
   entrypoint: main-pipeline

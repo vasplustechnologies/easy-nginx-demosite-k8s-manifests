@@ -1,24 +1,24 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
-  name: patient-api-nginx
+  name: {{ .Chart.Name }}
   namespace: easy-nginx
   labels:
-    app: patient-api-nginx
+    app: {{ .Chart.Name }}
 spec:
-  replicas: 3
+  replicas: {{ .Values.replicaCount }}
   revisionHistoryLimit: 2
   selector:
     matchLabels:
-      app: patient-api-nginx
+      app: {{ .Chart.Name }}
   template:
     metadata:
       labels:
-        app: patient-api-nginx
+        app: {{ .Chart.Name }}
     spec:
       containers:
-      - name: patient-api-nginx-nginx
-        image: "mofwili/easy-nginx:{{ .Values.image.tag }}"  # ✅ Helm template syntax
+      - name: {{ .Chart.Name }}-nginx
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         ports:
         - containerPort: 3000
         resources:
@@ -42,14 +42,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: patient-api-nginx-svc
+  name: {{ .Chart.Name }}-svc
   namespace: easy-nginx
 spec:
   ports:
-  - port: 80
+  - port: {{ .Values.service.port }}
     targetPort: 3000
     protocol: TCP
     name: http
   selector:
-    app: patient-api-nginx
-  type: ClusterIP
+    app: {{ .Chart.Name }}
+  type: {{ .Values.service.type }}

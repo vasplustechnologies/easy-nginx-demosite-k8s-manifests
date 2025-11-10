@@ -1,0 +1,9 @@
+image:
+  repository: mofwili/easy-nginx
+  tag: 1.0.0-initial
+
+replicaCount: 3
+
+service:
+  type: ClusterIP
+  port: 80
