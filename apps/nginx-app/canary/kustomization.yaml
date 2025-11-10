@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- rollout.yaml
+
+# ✅ Add common labels to all resources
+commonLabels:
+  app: easy-nginx
+  environment: production
+
+namespace: easy-nginx
+
+images:
+- name: nginx
+  newName: mofwili/easy-nginx
+  newTag: 1.0.0-initial  # This will be updated by image-updater

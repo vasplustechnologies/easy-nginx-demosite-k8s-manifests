@@ -7,7 +7,7 @@ metadata:
     argocd-image-updater.argoproj.io/image-list: nginx=mofwili/easy-nginx
     argocd-image-updater.argoproj.io/nginx.update-strategy: latest
     argocd-image-updater.argoproj.io/nginx.allow-tags: regexp:^[0-9]+\.[0-9]+\.[0-9]+-[a-f0-9]+$
-    argocd-image-updater.argoproj.io/nginx.ignore-tags: latest,main,dev
+    argocd-image-updater.argoproj.io/nginx.ignore-tags: latest,main,dev,1.0.0-initial
     argocd-image-updater.argoproj.io/write-back-method: git
     argocd-image-updater.argoproj.io/git-branch: main
 spec:
@@ -16,9 +16,9 @@ spec:
     repoURL: https://github.com/vasplustechnologies/easy-nginx-demosite-k8s-manifests.git
     targetRevision: main
     path: apps/nginx-app/canary
-    # ✅ ADD THIS to disable Kustomize and use plain YAML
-    directory:
-      recurse: false
+    # ✅ REMOVE directory: and let it use Kustomize by default
+    # directory:
+    #   recurse: false
   destination:
     server: https://kubernetes.default.svc
     namespace: easy-nginx

@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  generateName: production-pipeline-with-rollout-01
+  generateName: production-pipeline-ci-
   namespace: argo
 spec:
   entrypoint: main-pipeline
@@ -39,15 +39,6 @@ spec:
             value: "mofwili/easy-nginx:{{steps.build-image.outputs.parameters.version-tag}}"
         when: "{{steps.build-image.status}} == Succeeded"
 
-    # ✅ NEW: Argo Rollouts deployment step
-    - - name: update-rollout
-        template: update-rollout
-        arguments:
-          parameters:
-          - name: image-tag
-            value: "mofwili/easy-nginx:{{steps.build-image.outputs.parameters.version-tag}}"
-        when: "{{steps.security-scan.status}} == Succeeded"
-
     - - name: notify-success
         template: slack-notification
         arguments:
@@ -55,8 +46,8 @@ spec:
           - name: status
             value: "success"
           - name: message
-            value: "🚀 Production pipeline completed! Image: mofwili/easy-nginx:{{steps.build-image.outputs.parameters.version-tag}} | Scan: {{steps.security-scan.outputs.parameters.scan-result}} | Deployment: {{steps.update-rollout.outputs.parameters.rollout-status}}"
-        when: "{{steps.update-rollout.status}} == Succeeded"
+            value: "🚀 CI Pipeline completed! Image: mofwili/easy-nginx:{{steps.build-image.outputs.parameters.version-tag}} | Scan: {{steps.security-scan.outputs.parameters.scan-result}} | Argo CD will auto-deploy via image detection"
+        when: "{{steps.security-scan.status}} == Succeeded"
 
     - - name: notify-failure
         template: slack-notification
@@ -68,7 +59,6 @@ spec:
             value: "❌ Pipeline failed at: {{steps.security-scan.outputs.parameters.failed-step}}"
         when: "{{steps.security-scan.status}} == Failed"
 
-  # ✅ ALL YOUR EXISTING TEMPLATES REMAIN EXACTLY THE SAME
   - name: git-clone
     container:
       image: alpine/git:latest
@@ -139,10 +129,8 @@ spec:
         echo "🔒 Starting comprehensive security scan..."
         echo "📦 Scanning image: {{inputs.parameters.image-tag}}"
         
-        # Create reports directory in PERSISTENT storage
         mkdir -p /mnt/workspace/reports
 
-        # Run vulnerability scan - FAIL on CRITICAL vulnerabilities only
         echo "🔍 Scanning for CRITICAL vulnerabilities..."
         if trivy image --severity CRITICAL --exit-code 1 --format json --output /mnt/workspace/reports/trivy-critical.json {{inputs.parameters.image-tag}}; then
           echo "✅ No CRITICAL vulnerabilities found"
@@ -152,7 +140,6 @@ spec:
           echo "❌ Found $CRITICAL_COUNT CRITICAL vulnerabilities"
         fi
 
-        # Run full vulnerability scan for report (don't fail on HIGH)
         echo "🔍 Running full vulnerability scan..."
         trivy image --severity HIGH,CRITICAL --format json --output /mnt/workspace/reports/trivy-full.json {{inputs.parameters.image-tag}} || true
         
@@ -162,11 +149,9 @@ spec:
         echo "  CRITICAL vulnerabilities: $CRITICAL_COUNT"
         echo "  HIGH vulnerabilities: $HIGH_COUNT"
 
-        # Generate HTML report for better visualization
         echo "📄 Generating HTML report..."
         trivy image --format template --template "@contrib/html.tpl" --output /mnt/workspace/reports/trivy-report.html {{inputs.parameters.image-tag}} || true
 
-        # Also generate simple text summary
         echo "Security Scan Summary" > /mnt/workspace/reports/scan-summary.txt
         echo "====================" >> /mnt/workspace/reports/scan-summary.txt
         echo "Image: {{inputs.parameters.image-tag}}" >> /mnt/workspace/reports/scan-summary.txt
@@ -174,7 +159,6 @@ spec:
         echo "High Vulnerabilities: $HIGH_COUNT" >> /mnt/workspace/reports/scan-summary.txt
         echo "Scan Date: $(date)" >> /mnt/workspace/reports/scan-summary.txt
 
-        # Quality Gate - FAIL only on CRITICAL vulnerabilities
         if [ "$CRITICAL_COUNT" -gt "0" ]; then
           echo "❌ QUALITY GATE FAILED: $CRITICAL_COUNT CRITICAL vulnerabilities found"
           echo "critical_vulnerabilities" > /tmp/failed-step.txt
@@ -187,7 +171,6 @@ spec:
         fi
         
         echo "📁 Reports saved to persistent storage: /mnt/workspace/reports/"
-        echo "📋 Available reports:"
         ls -la /mnt/workspace/reports/
       volumeMounts:
       - name: workspace-pvc
@@ -204,94 +187,7 @@ spec:
       - name: security-reports
         path: /mnt/workspace/reports
         archive:
-          none: {}  # Keep files as-is, no compression
-
-  # # ✅ NEW: Argo Rollouts template
-  # - name: update-rollout
-  #   inputs:
-  #     parameters:
-  #     - name: image-tag
-  #   container:
-  #     image: argoproj/kubectl-argo-rollouts:latest
-  #     command: [sh, -c]
-  #     args:
-  #     - |
-  #       set -e
-  #       echo "🚀 Starting Argo Rollouts deployment..."
-  #       echo "📦 Deploying image: {{inputs.parameters.image-tag}}"
-        
-  #       # Update the rollout with the new image
-  #       kubectl argo rollouts set image easy-nginx \
-  #         nginx={{inputs.parameters.image-tag}} \
-  #         -n easy-nginx
-        
-  #       echo "✅ Rollout update initiated!"
-  #       echo "📊 Rollout status:"
-  #       kubectl argo rollouts get rollout easy-nginx -n easy-nginx --watch=false
-        
-  #       # Get rollout status for notification
-  #       ROLLOUT_STATUS=$(kubectl argo rollouts get rollout easy-nginx -n easy-nginx -o jsonpath='{.status.phase}')
-  #       echo "Rollout Phase: $ROLLOUT_STATUS"
-  #       echo "$ROLLOUT_STATUS" > /tmp/rollout-status.txt
-        
-  #       echo "🎯 Canary deployment in progress..."
-  #       echo "   25% → 50% → 75% → 100%"
-  #       echo "   Monitor with: kubectl argo rollouts get rollout easy-nginx -n easy-nginx --watch"
-  #     volumeMounts:
-  #     - name: kubeconfig
-  #       mountPath: /root/.kube
-  #       readOnly: true
-  #   outputs:
-  #     parameters:
-  #     - name: rollout-status
-  #       valueFrom:
-  #         path: /tmp/rollout-status.txt
-
-  - name: update-rollout
-  inputs:
-    parameters:
-    - name: image-tag
-  container:
-    image: bitnami/kubectl:latest  # Use standard kubectl + manual plugin install
-    command: [sh, -c]
-    args:
-    - |
-      set -e
-      echo "🚀 Setting up Argo Rollouts plugin..."
-      
-      # Install argo-rollouts kubectl plugin manually
-      curl -LO https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
-      chmod +x kubectl-argo-rollouts-linux-amd64
-      mv kubectl-argo-rollouts-linux-amd64 /usr/local/bin/kubectl-argo-rollouts
-      
-      echo "✅ Argo Rollouts plugin installed"
-      echo "📦 Deploying image: {{inputs.parameters.image-tag}}"
-      
-      # Update the rollout with the new image
-      kubectl argo rollouts set image easy-nginx \
-        nginx={{inputs.parameters.image-tag}} \
-        -n easy-nginx
-      
-      echo "✅ Rollout update initiated!"
-      echo "📊 Rollout status:"
-      kubectl argo rollouts get rollout easy-nginx -n easy-nginx --watch=false
-      
-      # Get rollout status for notification
-      ROLLOUT_STATUS=$(kubectl argo rollouts get rollout easy-nginx -n easy-nginx -o jsonpath='{.status.phase}')
-      echo "Rollout Phase: $ROLLOUT_STATUS"
-      echo "$ROLLOUT_STATUS" > /tmp/rollout-status.txt
-      
-      echo "🎯 Canary deployment in progress..."
-      echo "   25% → 50% → 75% → 100%"
-    volumeMounts:
-    - name: kubeconfig
-      mountPath: /root/.kube
-      readOnly: true
-  outputs:
-    parameters:
-    - name: rollout-status
-      valueFrom:
-        path: /tmp/rollout-status.txt
+          none: {}
 
   - name: slack-notification
     inputs:
@@ -306,22 +202,17 @@ spec:
         set -e
         echo "📨 Preparing Slack notification..."
         
-        # Check if webhook URL is set
         if [ -z "$SLACK_WEBHOOK_URL" ]; then
           echo "⚠️  SLACK_WEBHOOK_URL not set, skipping notification"
           exit 0
         fi
 
-        # Determine color based on status
         if [ "{{inputs.parameters.status}}" = "success" ]; then
           COLOR="good"
-          EMOJI="🚀"
         else
           COLOR="danger"
-          EMOJI="❌"
         fi
 
-        # Create rich notification payload
         PAYLOAD=$(cat << EOF
         {
           "attachments": [
