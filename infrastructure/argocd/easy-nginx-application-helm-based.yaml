@@ -6,17 +6,12 @@ metadata:
   annotations:
     argocd-image-updater.argoproj.io/image-list: nginx=mofwili/easy-nginx
     argocd-image-updater.argoproj.io/nginx.update-strategy: newest-build
-    # ✅ CHANGE: Only allow clean semantic versions (no SHA)
     argocd-image-updater.argoproj.io/nginx.allow-tags: regexp:^[0-9]+\.[0-9]+\.[0-9]+$
-    # ✅ CHANGE: Ignore ALL versions with git SHA
-    argocd-image-updater.argoproj.io/nginx.ignore-tags: regexp:.*-[a-f0-9]+,latest,main,dev,1.0.0-initial
-    argocd-image-updater.argoproj.io/nginx.helm.image-name: image.repository
-    argocd-image-updater.argoproj.io/nginx.helm.image-tag: image.tag
+    argocd-image-updater.argoproj.io/nginx.ignore-tags: "*"
     argocd-image-updater.argoproj.io/write-back-method: git
     argocd-image-updater.argoproj.io/git-branch: main
-    # ℹ️ Remove or keep this - kustomization might not be needed for Helm
-    # ✅ Add write-back target
-    argocd-image-updater.argoproj.io/nginx.write-back-target: kustomization
+    # ✅ CHANGE: Use "values" for Helm, not "kustomization"
+    argocd-image-updater.argoproj.io/nginx.write-back-target: values
 spec:
   project: default
   source:
