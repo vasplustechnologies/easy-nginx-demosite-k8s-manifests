@@ -1,0 +1,8 @@
+helm:
+  parameters:
+  - name: image.repository
+    value: mofwili/easy-nginx
+    forcestring: true
+  - name: image.tag
+    value: 1.0.2-582796b
+    forcestring: true
