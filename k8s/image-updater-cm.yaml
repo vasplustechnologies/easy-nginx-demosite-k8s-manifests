@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-image-updater-config
+  namespace: argocd
+data:
+  registries.conf: |
+    registries:
+    - name: DockerHub
+      api_url: https://registry-1.docker.io
+      prefix: docker.io
+      credentials: secret:argo-registry
+  git-commit-user-email: vasplustechnologies@gmail.com
+  git-commit-user-name: ArgoCD Image Updater
+  update-strategy: newest-build

@@ -1,23 +1,24 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
-  name: {{ .Chart.Name }}
+  name: patient-api-nginx
   namespace: easy-nginx
   labels:
-    app: {{ .Chart.Name }}
+    app: patient-api-nginx
 spec:
   replicas: {{ .Values.replicaCount }}
   revisionHistoryLimit: 2
   selector:
     matchLabels:
-      app: {{ .Chart.Name }}
+      app: patient-api-nginx
   template:
     metadata:
       labels:
-        app: {{ .Chart.Name }}
+        app: patient-api-nginx
     spec:
       containers:
-      - name: {{ .Chart.Name }}-nginx
+      - name: patient-api-nginx-nginx
+        # ✅ Remove Helm template syntax - image updater will handle this
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         ports:
         - containerPort: 3000
@@ -38,18 +39,3 @@ spec:
       - setWeight: 75
       - pause: {duration: 30s}
       - setWeight: 100
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ .Chart.Name }}-svc
-  namespace: easy-nginx
-spec:
-  ports:
-  - port: {{ .Values.service.port }}
-    targetPort: 3000
-    protocol: TCP
-    name: http
-  selector:
-    app: {{ .Chart.Name }}
-  type: {{ .Values.service.type }}

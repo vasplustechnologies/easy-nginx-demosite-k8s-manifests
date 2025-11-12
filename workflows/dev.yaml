@@ -52,20 +52,34 @@ spec:
             value: "🚀 CI Pipeline completed! Image: mofwili/easy-nginx:{{steps.build-image.outputs.parameters.semantic-tag}} | Scan: {{steps.security-scan.outputs.parameters.scan-result}}"
         when: "{{steps.security-scan.status}} == Succeeded"
 
-  # NEW TEMPLATE: Get next semantic version
+  # FIXED VERSION: Checks Docker Hub for latest version
   - name: get-next-version
     container:
-      image: bitnami/kubectl:latest
+      image: curlimages/curl:latest
       command: [sh, -c]
       args:
       - |
         set -e
         echo "🔍 Determining next semantic version..."
         
-        # Get current version from workflow parameter
-        CURRENT_VERSION="{{workflow.parameters.image-version}}"
+        # Get ALL version tags from Docker Hub and find the latest
+        echo "📡 Checking Docker Hub for existing versions..."
+        LATEST_VERSION=$(curl -s "https://hub.docker.com/v2/repositories/mofwili/easy-nginx/tags/?page_size=100" | \
+          grep -o '"name":"[0-9]*\.[0-9]*\.[0-9]*"' | \
+          cut -d'"' -f4 | \
+          sort -V | \
+          tail -1) || true
         
-        # Simple version increment logic
+        if [ -n "$LATEST_VERSION" ] && [ "$LATEST_VERSION" != "null" ]; then
+          echo "📊 Found latest version in Docker Hub: $LATEST_VERSION"
+          CURRENT_VERSION="$LATEST_VERSION"
+        else
+          # Fallback to workflow parameter if no versions found
+          CURRENT_VERSION="{{workflow.parameters.image-version}}"
+          echo "⚠️  No existing versions found in Docker Hub, using default: $CURRENT_VERSION"
+        fi
+        
+        # Parse and increment version
         MAJOR=$(echo $CURRENT_VERSION | cut -d. -f1)
         MINOR=$(echo $CURRENT_VERSION | cut -d. -f2)
         PATCH=$(echo $CURRENT_VERSION | cut -d. -f3)
@@ -74,8 +88,11 @@ spec:
         NEW_PATCH=$((PATCH + 1))
         NEXT_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
         
-        echo "📊 Version: $CURRENT_VERSION → $NEXT_VERSION"
+        echo "🎯 Version increment: $CURRENT_VERSION → $NEXT_VERSION"
         echo $NEXT_VERSION > /tmp/next-version.txt
+      volumeMounts:
+      - name: workspace-pvc
+        mountPath: /mnt/workspace
     outputs:
       parameters:
       - name: next-version
@@ -140,7 +157,6 @@ spec:
       - name: semantic-tag
         value: "{{inputs.parameters.image-version}}"
 
-  # ADD THE MISSING SECURITY-SCAN TEMPLATE
   - name: security-scan
     inputs:
       parameters:
@@ -173,7 +189,6 @@ spec:
         valueFrom:
           path: /tmp/scan-result.txt
 
-  # ADD THE MISSING SLACK-NOTIFICATION TEMPLATE
   - name: slack-notification
     inputs:
       parameters:
