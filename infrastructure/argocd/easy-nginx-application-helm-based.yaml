@@ -5,14 +5,15 @@ metadata:
   namespace: argocd
   annotations:
     argocd-image-updater.argoproj.io/image-list: nginx=mofwili/easy-nginx
-    #argocd-image-updater.argoproj.io/nginx.update-strategy: newest-build
     argocd-image-updater.argoproj.io/nginx.update-strategy: semver
-    argocd-image-updater.argoproj.io/nginx.allow-tags: regexp:^[0-9]+\.[0-9]+\.[0-9]+$
-    argocd-image-updater.argoproj.io/nginx.ignore-tags: "*"
+    argocd-image-updater.argoproj.io/nginx.allow-tags: regexp:^[0-9]+\.[0-9]+\.[0-9]+(-[a-f0-9]+)?$
+    argocd-image-updater.argoproj.io/nginx.ignore-tags: latest,main,dev
+    argocd-image-updater.argoproj.io/nginx.helm.image-name: image.repository
+    argocd-image-updater.argoproj.io/nginx.helm.image-tag: image.tag
     argocd-image-updater.argoproj.io/write-back-method: git
     argocd-image-updater.argoproj.io/git-branch: main
-    # ✅ CHANGE: Use "values" for Helm, not "kustomization"
     argocd-image-updater.argoproj.io/nginx.write-back-target: values
+    argocd-image-updater.argoproj.io/force-update: "true"
 spec:
   project: default
   source:
