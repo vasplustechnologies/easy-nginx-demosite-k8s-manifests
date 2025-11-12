@@ -23,6 +23,7 @@ spec:
     helm:
       valueFiles:
       - values.yaml
+      releaseName: nginx
   destination:
     server: https://kubernetes.default.svc
     namespace: easy-nginx
