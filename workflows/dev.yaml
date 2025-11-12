@@ -134,9 +134,9 @@ spec:
       - --dockerfile=/mnt/workspace/Dockerfile
       - --context=dir:///mnt/workspace
       # KEEP EXISTING TAGS SEMANTIC TAGS
-      #- --destination=mofwili/easy-nginx:{{inputs.parameters.image-version}}-{{inputs.parameters.git-sha}}
+      - --destination=mofwili/easy-nginx:{{inputs.parameters.image-version}}-{{inputs.parameters.git-sha}}
       - --destination=mofwili/easy-nginx:{{inputs.parameters.image-version}}
-      #- --destination=mofwili/easy-nginx:latest
+      - --destination=mofwili/easy-nginx:latest
       - --cache=false
       - --single-snapshot
       - --verbosity=info
@@ -151,8 +151,8 @@ spec:
         mountPath: /kaniko/.docker
     outputs:
       parameters:
-      #- name: version-tag
-        #value: "{{inputs.parameters.image-version}}-{{inputs.parameters.git-sha}}"
+      - name: version-tag
+        value: "{{inputs.parameters.image-version}}-{{inputs.parameters.git-sha}}"
       - name: semantic-tag
         value: "{{inputs.parameters.image-version}}"
 
