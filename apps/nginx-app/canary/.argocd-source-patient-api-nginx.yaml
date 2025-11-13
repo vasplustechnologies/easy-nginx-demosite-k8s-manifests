@@ -4,5 +4,5 @@ helm:
     value: mofwili/easy-nginx
     forcestring: true
   - name: image.tag
-    value: 1.0.11-95bafb1
+    value: 1.0.12-95bafb1
     forcestring: true
